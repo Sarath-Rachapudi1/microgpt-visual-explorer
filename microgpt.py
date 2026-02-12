@@ -9,9 +9,7 @@ Everything else is just efficiency.
 import os       # os.path.exists
 import math     # math.log, math.exp
 import random   # random.seed, random.choices, random.gauss, random.shuffle
-
-# Let there be order among chaos
-random.seed(42)
+random.seed(42) # Let there be order among chaos
 
 # Let there be an input dataset `docs`: list[str] of documents (e.g. a dataset of names)
 if not os.path.exists('input.txt'):
@@ -23,88 +21,33 @@ random.shuffle(docs)
 print(f"num docs: {len(docs)}")
 
 # Let there be a Tokenizer to translate strings to discrete symbols and back
-chars = ['<BOS>'] + sorted(set(''.join(docs))) # character-level tokenizer with a BOS delimiter
-vocab_size = len(chars)
-stoi = { ch:i for i, ch in enumerate(chars) } # encoding: map string to integer
-itos = { i:ch for i, ch in enumerate(chars) } # decoding: map integer to string
-BOS = stoi['<BOS>']
+uchars = sorted(set(''.join(docs))) # unique characters in the dataset become token ids 0..n-1
+BOS = len(uchars) # token id for the special Beginning of Sequence (BOS) token
+vocab_size = len(uchars) + 1 # total number of unique tokens, +1 is for BOS
 print(f"vocab size: {vocab_size}")
 
-# Let there be an Autograd to apply the chain rule recursively across a computation graph and so
-# calculate the gradients of the loss with respect to model parameters.
+# Let there be an Autograd to apply the chain rule recursively across a computation graph
 class Value:
-    """Stores a single scalar value and its gradient."""
+    """Stores a single scalar value and its gradient, as a node in a computation graph."""
 
-    def __init__(self, data, _children=(), _op=''):
-        self.data = data
-        self.grad = 0
-        self._backward = lambda: None
-        self._prev = set(_children)
-        self._op = _op # the op that produced this node, for graphviz / debugging / etc
+    def __init__(self, data, children=(), local_grads=()):
+        self.data = data                # scalar value of this node calculated during forward pass
+        self.grad = 0                   # derivative of the loss w.r.t. this node, calculated in backward pass
+        self._children = children       # children of this node in the computation graph
+        self._local_grads = local_grads # local derivative of this node w.r.t. its children
 
     def __add__(self, other):
         other = other if isinstance(other, Value) else Value(other)
-        out = Value(self.data + other.data, (self, other), '+')
-        def _backward():
-            self.grad += out.grad
-            other.grad += out.grad
-        out._backward = _backward
-        return out
+        return Value(self.data + other.data, (self, other), (1, 1))
 
     def __mul__(self, other):
         other = other if isinstance(other, Value) else Value(other)
-        out = Value(self.data * other.data, (self, other), '*')
-        def _backward():
-            self.grad += other.data * out.grad
-            other.grad += self.data * out.grad
-        out._backward = _backward
-        return out
+        return Value(self.data * other.data, (self, other), (other.data, self.data))
 
-    def __pow__(self, other):
-        assert isinstance(other, (int, float)), "only supporting int/float powers for now"
-        out = Value(self.data**other, (self,), f'**{other}')
-        def _backward():
-            self.grad += (other * self.data**(other-1)) * out.grad
-        out._backward = _backward
-        return out
-
-    def log(self):
-        out = Value(math.log(self.data), (self,), 'log')
-        def _backward():
-            self.grad += (1 / self.data) * out.grad
-        out._backward = _backward
-        return out
-
-    def exp(self):
-        out = Value(math.exp(self.data), (self,), 'exp')
-        def _backward():
-            self.grad += out.data * out.grad
-        out._backward = _backward
-        return out
-
-    def relu(self):
-        out = Value(0 if self.data < 0 else self.data, (self,), 'ReLU')
-        def _backward():
-            self.grad += (out.data > 0) * out.grad
-        out._backward = _backward
-        return out
-
-    def backward(self):
-        # topological order all of the children in the graph
-        topo = []
-        visited = set()
-        def build_topo(v):
-            if v not in visited:
-                visited.add(v)
-                for child in v._prev:
-                    build_topo(child)
-                topo.append(v)
-        build_topo(self)
-        # go one variable at a time and apply the chain rule to get its gradient
-        self.grad = 1
-        for v in reversed(topo):
-            v._backward()
-
+    def __pow__(self, other): return Value(self.data**other, (self,), (other * self.data**(other-1),))
+    def log(self): return Value(math.log(self.data), (self,), (1/self.data,))
+    def exp(self): return Value(math.exp(self.data), (self,), (math.exp(self.data),))
+    def relu(self): return Value(max(0, self.data), (self,), (float(self.data > 0),))
     def __neg__(self): return self * -1
     def __radd__(self, other): return self + other
     def __sub__(self, other): return self + (-other)
@@ -112,7 +55,21 @@ class Value:
     def __rmul__(self, other): return self * other
     def __truediv__(self, other): return self * other**-1
     def __rtruediv__(self, other): return other * self**-1
-    def __repr__(self): return f"Value(data={self.data}, grad={self.grad})"
+
+    def backward(self):
+        topo = []
+        visited = set()
+        def build_topo(v):
+            if v not in visited:
+                visited.add(v)
+                for child in v._children:
+                    build_topo(child)
+                topo.append(v)
+        build_topo(self)
+        self.grad = 1
+        for v in reversed(topo):
+            for child, local_grad in zip(v._children, v._local_grads):
+                child.grad += local_grad * v.grad
 
 # Initialize the parameters, to store the knowledge of the model.
 n_embd = 16     # embedding dimension
@@ -195,9 +152,9 @@ v = [0.0] * len(params) # second moment buffer
 num_steps = 500 # number of training steps
 for step in range(num_steps):
 
-    # Take single document, tokenize it, surround it with BOS special token on both sides
+    # Take single document, tokenize it, surround it with BOS special token (token id 0) on both sides
     doc = docs[step % len(docs)]
-    tokens = [BOS] + [stoi[ch] for ch in doc] + [BOS]
+    tokens = [BOS] + [uchars.index(ch) for ch in doc] + [BOS]
     n = min(block_size, len(tokens) - 1)
 
     # Forward the token sequence through the model, building up the computation graph all the way to the loss.
@@ -215,7 +172,7 @@ for step in range(num_steps):
     loss.backward()
 
     # Adam optimizer update: update the model parameters based on the corresponding gradients.
-    lr_t = learning_rate * (1 - step / num_steps)
+    lr_t = learning_rate * 0.5 * (1 + math.cos(math.pi * step / num_steps)) # cosine learning rate decay
     for i, p in enumerate(params):
         m[i] = beta1 * m[i] + (1 - beta1) * p.grad
         v[i] = beta2 * v[i] + (1 - beta2) * p.grad ** 2
@@ -227,17 +184,17 @@ for step in range(num_steps):
     print(f"step {step+1:4d} / {num_steps:4d} | loss {loss.data:.4f}")
 
 # Inference: may the model babble back to us
-temperature = 0.6 # in (0, 1], control the "creativity" of generated text, low to high
+temperature = 0.5 # in (0, 1], control the "creativity" of generated text, low to high
 print("\n--- inference ---")
 for sample_idx in range(20):
     keys, values = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
     token_id = BOS
-    print(f"sample {sample_idx+1}: ", end="")
+    sample = []
     for pos_id in range(block_size):
         logits = gpt(token_id, pos_id, keys, values)
         probs = softmax([l / temperature for l in logits])
         token_id = random.choices(range(vocab_size), weights=[p.data for p in probs])[0]
         if token_id == BOS:
             break
-        print(itos[token_id], end="")
-    print()
+        sample.append(uchars[token_id])
+    print(f"sample {sample_idx+1:2d}: {''.join(sample)}")
