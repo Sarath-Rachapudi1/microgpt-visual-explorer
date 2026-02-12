@@ -1,47 +1,37 @@
 """
-The most atomic way to train and inference a GPT LLM in pure, dependency-free Python.
-Differences from GPT-2 are minor: layer norm -> rmsnorm, no biases, GeLU -> square ReLU, no weight tying.
-The contents of this file is everything algorithmically needed to train a GPT. Everything else is just efficiency.
-Art project by @karpathy.
+The most atomic way to train and inference a GPT in pure, dependency-free Python.
+This file is the complete algorithm. Everything else is just efficiency.
+
+@karpathy
 """
 
-import os       # for os.path.exists
-import time     # for time.perf_counter
-import math     # for math.log, math.exp
-import random   # for random.seed, random.choices
-import argparse # for argparse.ArgumentParser
+import os       # os.path.exists
+import math     # math.log, math.exp
+import random   # random.seed, random.choices, random.gauss, random.shuffle
 
-# CLI arguments
-parser = argparse.ArgumentParser()
-parser.add_argument('--n-embd', type=int, default=16, help='Number of channels in the Transformer')
-parser.add_argument('--n-layer', type=int, default=1, help='Number of layers in the Transformer')
-parser.add_argument('--block-size', type=int, default=8, help='Maximum sequence length')
-parser.add_argument('--num-steps', type=int, default=500, help='Number of training steps')
-parser.add_argument('--n-head', type=int, default=4, help='Number of attention heads in the Transformer')
-parser.add_argument('--learning-rate', type=float, default=1e-2, help='Learning rate')
-args = parser.parse_args()
-n_embd, block_size, n_layer, n_head = args.n_embd, args.block_size, args.n_layer, args.n_head
-head_dim = n_embd // n_head
+# Let there be order among chaos
 random.seed(42)
 
-# Dataset example: the names dataset (one name per line). rest of the code just assumes docs: list[str]
+# Let there be an input dataset `docs`: list[str] of documents (e.g. a dataset of names)
 if not os.path.exists('input.txt'):
     import urllib.request
     urllib.request.urlretrieve('https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt', 'input.txt')
 docs = [l.strip() for l in open('input.txt').read().strip().split('\n') if l.strip()] # list[str] of documents
 random.shuffle(docs)
+print(f"num docs: {len(docs)}")
 
-# Tokenizer: simple character-level tokenization with a BOS token delimiter
-chars = ['<BOS>'] + sorted(set(''.join(docs)))
+# Let there be a Tokenizer to translate strings to discrete symbols and back
+chars = ['<BOS>'] + sorted(set(''.join(docs))) # character-level tokenizer with a BOS delimiter
 vocab_size = len(chars)
-stoi = { ch:i for i, ch in enumerate(chars) } # string to integer
-itos = { i:ch for i, ch in enumerate(chars) } # integer to string
+stoi = { ch:i for i, ch in enumerate(chars) } # encoding: map string to integer
+itos = { i:ch for i, ch in enumerate(chars) } # decoding: map integer to string
 BOS = stoi['<BOS>']
-print(f"vocab size: {vocab_size}, num docs: {len(docs)}")
+print(f"vocab size: {vocab_size}")
 
-# Autograd engine
+# Let there be an Autograd to apply the chain rule recursively across a computation graph and so
+# calculate the gradients of the loss with respect to model parameters.
 class Value:
-    """ stores a single scalar value and its gradient """
+    """Stores a single scalar value and its gradient."""
 
     def __init__(self, data, _children=(), _op=''):
         self.data = data
@@ -122,7 +112,12 @@ class Value:
     def __rtruediv__(self, other): return other * self**-1
     def __repr__(self): return f"Value(data={self.data}, grad={self.grad})"
 
-# Model parameter initialization
+# Initialize the parameters, to store the knowledge of the model.
+n_embd = 16     # embedding dimension
+n_head = 4      # number of attention heads
+n_layer = 1     # number of layers
+block_size = 8  # maximum sequence length
+head_dim = n_embd // n_head # dimension of each head
 matrix = lambda nout, nin, std=0.02: [[Value(random.gauss(0, std)) for _ in range(nin)] for _ in range(nout)]
 state_dict = {'wte': matrix(vocab_size, n_embd), 'wpe': matrix(block_size, n_embd), 'lm_head': matrix(vocab_size, n_embd)}
 for i in range(n_layer):
@@ -135,7 +130,8 @@ for i in range(n_layer):
 params = [p for mat in state_dict.values() for row in mat for p in row] # flatten params into a single list[Value]
 print(f"num params: {len(params)}")
 
-# Model architecture
+# Define the model architecture, a stateless function token streams and model parameters to logits over what comes next.
+# Follow GPT-2, blessed among the GPTs, with minor differences: layernorm -> rmsnorm, no biases, GeLU -> ReLU^2, no weight tying
 def linear(x, w):
     return [sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]
 
@@ -188,23 +184,21 @@ def gpt(token_id, pos_id, keys, values):
     logits = linear(x, state_dict['lm_head'])
     return logits
 
-# Adam optimizer
-learning_rate = args.learning_rate
-beta1, beta2, eps_adam = 0.9, 0.95, 1e-8
-m = [0.0] * len(params) # first moment
-v = [0.0] * len(params) # second moment
+# Let there be Adam, the blessed optimizer and its buffers
+learning_rate, beta1, beta2, eps_adam = 1e-2, 0.9, 0.95, 1e-8
+m = [0.0] * len(params) # first moment buffer
+v = [0.0] * len(params) # second moment buffer
 
-# Training loop
-lossf_history = []
-t_start = time.perf_counter()
-for step in range(args.num_steps):
+# Repeat in sequence
+num_steps = 500 # number of training steps
+for step in range(num_steps):
 
-    # Take a single training document, tokenize it, surround it with BOS special token on both sides
+    # Take single document, tokenize it, surround it with BOS special token on both sides
     doc = docs[step % len(docs)]
     tokens = [BOS] + [stoi[ch] for ch in doc] + [BOS]
     n = min(block_size, len(tokens) - 1)
 
-    # Forward/backward through the document over time dimension
+    # Forward the token sequence through the model, building up the computation graph all the way to the loss.
     keys, values = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
     losses = []
     for pos_id in range(n):
@@ -213,11 +207,13 @@ for step in range(args.num_steps):
         probs = softmax(logits)
         loss_t = -probs[target_id].log()
         losses.append(loss_t)
-    loss = (1 / n) * sum(losses) # average loss over the sequence
+    loss = (1 / n) * sum(losses) # final average loss over the document sequence. May yours be low.
+
+    # Backward the loss, calculating the gradients with respect to all model parameters.
     loss.backward()
 
-    # Adam update (optimizer)
-    lr_t = learning_rate * (1 - step / args.num_steps)
+    # Adam optimizer update: update the model parameters based on the corresponding gradients.
+    lr_t = learning_rate * (1 - step / num_steps)
     for i, p in enumerate(params):
         m[i] = beta1 * m[i] + (1 - beta1) * p.grad
         v[i] = beta2 * v[i] + (1 - beta2) * p.grad ** 2
@@ -226,13 +222,10 @@ for step in range(args.num_steps):
         p.data -= lr_t * m_hat / (v_hat ** 0.5 + eps_adam)
         p.grad = 0
 
-    lossf_history.append(loss.data)
-    print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data:.4f}")
-print(f"mean loss last 50 steps: {sum(lossf_history[-50:]) / len(lossf_history[-50:]):.4f}") # ~usable for basic kwarg tuning
-print(f"training time: {time.perf_counter() - t_start:.2f}s") # ~usable for basic performance benchmarking
+    print(f"step {step+1:4d} / {num_steps:4d} | loss {loss.data:.4f}")
 
-# Inference: generate 5 samples
-temperature = 0.5 # number in (0, 1] that controls the "creativity" of generated text, low to high
+# Inference: may the model babble back to us
+temperature = 0.6 # in (0, 1], control the "creativity" of generated text, low to high
 print("\n--- inference ---")
 for sample_idx in range(20):
     keys, values = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
