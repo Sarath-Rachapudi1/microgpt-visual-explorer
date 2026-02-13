@@ -1,5 +1,5 @@
 import { Token } from '@/types';
-import { CHAR_TO_ID, ID_TO_CHAR } from './constants';
+import { CHAR_TO_ID } from './constants';
 
 export function tokenize(text: string): Token[] {
   const normalized = text.toLowerCase().replace(/[^a-z]/g, '');
