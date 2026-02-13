@@ -1,7 +1,0 @@
-{
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "cd microgpt-explorer && npm run build",
-  "devCommand": "cd microgpt-explorer && npm run dev",
-  "installCommand": "cd microgpt-explorer && npm install",
-  "outputDirectory": "microgpt-explorer/.next"
-}
