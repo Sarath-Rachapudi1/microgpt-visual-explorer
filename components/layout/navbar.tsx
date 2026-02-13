@@ -49,7 +49,7 @@ export function Navbar() {
 
           <div className="flex items-center gap-4">
             <Link
-              href="https://github.com/karpathy/microgpt"
+              href="https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95"
               target="_blank"
               rel="noopener noreferrer"
               className="hidden sm:block text-sm text-muted-foreground hover:text-foreground transition-colors"
@@ -94,7 +94,7 @@ export function Navbar() {
                 </Link>
               ))}
               <Link
-                href="https://github.com/karpathy/microgpt"
+                href="https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-sm text-muted-foreground hover:text-foreground transition-colors px-2 py-2"

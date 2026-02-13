@@ -153,7 +153,7 @@ All without requiring:
 
 ## Acknowledgements
 
-Based on [microgpt.py](https://github.com/karpathy/microgpt) by Andrej Karpathy - a minimal, educational implementation of GPT in pure Python.
+Based on [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) by Andrej Karpathy - a minimal, educational implementation of GPT in pure Python.
 
 ## License
 
